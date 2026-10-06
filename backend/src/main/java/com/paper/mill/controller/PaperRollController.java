@@ -13,8 +13,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.paper.mill.common.ApiResponse;
+import com.paper.mill.entity.CuttingRequisition;
 import com.paper.mill.entity.PaperRoll;
+import com.paper.mill.entity.RequisitionAttempt;
 import com.paper.mill.service.PaperRollService;
+import com.paper.mill.service.RequisitionService;
 
 /** 抄纸工段 · 纸卷接口 */
 @RestController
@@ -22,9 +25,12 @@ import com.paper.mill.service.PaperRollService;
 public class PaperRollController {
 
     private final PaperRollService rollService;
+    private final RequisitionService requisitionService;
 
-    public PaperRollController(PaperRollService rollService) {
+    public PaperRollController(PaperRollService rollService,
+                               RequisitionService requisitionService) {
         this.rollService = rollService;
+        this.requisitionService = requisitionService;
     }
 
     @GetMapping
@@ -71,5 +77,22 @@ public class PaperRollController {
                                           @RequestParam Integer lengthM,
                                           @RequestParam(required = false) BigDecimal weightKg) {
         return ApiResponse.success("取用已登记", rollService.consume(id, lengthM, weightKg));
+    }
+
+    // ---------------- 切裁领料追溯（母卷导轨侧） ----------------
+
+    /** 本卷被领走过的料：每张切纸订单从本卷领走的长度/重量/操作人/时间 */
+    @GetMapping("/{id}/requisitions")
+    public ApiResponse<List<CuttingRequisition>> listRequisitions(@PathVariable Long id) {
+        // 先确认母卷存在，不存在沿用 get() 的业务提示
+        rollService.get(id);
+        return ApiResponse.success(requisitionService.listByRoll(id));
+    }
+
+    /** 本卷最近的领料留痕（含失败原因，刷新/重开页面仍可见） */
+    @GetMapping("/{id}/requisition-attempts")
+    public ApiResponse<List<RequisitionAttempt>> listAttempts(@PathVariable Long id) {
+        rollService.get(id);
+        return ApiResponse.success(requisitionService.attemptsByRoll(id));
     }
 }

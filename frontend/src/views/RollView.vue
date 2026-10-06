@@ -20,6 +20,10 @@ const selectedRollId = ref(null)
 const counts = ref({})
 const consumeLength = ref(500)
 
+// 切裁领料追溯：选中母卷被哪些切纸订单领走过料，以及最近的领料失败留痕
+const rollRequisitions = ref([])
+const rollAttempts = ref([])
+
 const rollsByMachine = computed(() => {
   const map = {}
   for (const r of rolls.value) {
@@ -55,9 +59,32 @@ async function load() {
     }
     counts.value = c
     if (!selectedRollId.value && rolls.value.length) selectedRollId.value = rolls.value[0].id
+    await loadTrace()
   } catch (e) {
     error.value = e.message
   }
+}
+
+// 母卷导轨侧追溯：本卷领料账本 + 失败留痕
+async function loadTrace() {
+  if (!selected.value) { rollRequisitions.value = []; rollAttempts.value = []; return }
+  try {
+    const [ledger, logs] = await Promise.all([
+      api.rollRequisitions(selected.value.id),
+      api.rollRequisitionAttempts(selected.value.id)
+    ])
+    rollRequisitions.value = ledger
+    rollAttempts.value = logs
+  } catch (e) {
+    rollRequisitions.value = []
+    rollAttempts.value = []
+  }
+}
+
+const rollLastFails = computed(() => rollAttempts.value.filter((a) => a.result === 'FAILED'))
+
+function fmtTime(t) {
+  return t ? String(t).replace('T', ' ').slice(0, 16) : ''
 }
 
 function barWidth(r) {
@@ -95,6 +122,7 @@ async function consume() {
 }
 
 watch(() => routeQuery.value.q, () => load())
+watch(selectedRollId, () => loadTrace())
 onMounted(load)
 </script>
 
@@ -160,6 +188,45 @@ onMounted(load)
         <button class="act" :disabled="selected.status !== '可用'" @click="consume">登记取用</button>
       </div>
       <div class="note">检验只针对「待检」卷；取用只针对「可用」卷，扣减后余长不足 200m 会自动判为已切完。</div>
+      <div class="note">切裁领料请在「切纸工段」订单上登记；本页只做导轨侧追溯——下方账本与订单侧是同一批记录。</div>
+
+      <!-- ============ 领料追溯（母卷导轨侧，与订单详情同一本账） ============ -->
+      <div class="trace-head">
+        <span class="trace-title">本卷领料追溯</span>
+        <span class="trace-desc">被切纸订单领走 {{ rollRequisitions.length }} 次；母卷转「已切完」后记录仍保留</span>
+      </div>
+
+      <div v-if="rollLastFails.length" class="fail-persist">
+        <div class="fp-tag">本卷最近的领料失败留痕（重开页面仍在，可对照真实余量）</div>
+        <div v-for="a in rollLastFails.slice(0, 3)" :key="a.id" class="fp-row">
+          <span class="fp-time">{{ fmtTime(a.attemptedAt) }} · 订单 {{ a.orderNo || '-' }} · {{ a.operator || '-' }}</span>
+          <span class="fp-reason">{{ a.failReason }}</span>
+        </div>
+      </div>
+
+      <div v-if="!rollRequisitions.length" class="trace-empty">本卷还没有被切纸订单领过料</div>
+      <table v-else class="ledger">
+        <thead>
+          <tr>
+            <th>领料单号</th><th>切纸订单</th><th>客户</th>
+            <th>本次长度(m)</th><th>本次重量(kg)</th><th>操作时间</th><th>操作人</th>
+            <th>扣后余长(m)</th><th>扣后余重(kg)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="q in rollRequisitions" :key="q.id">
+            <td class="mono">{{ q.requisitionNo }}</td>
+            <td>{{ q.orderNo }}</td>
+            <td>{{ q.order && q.order.customerName }}</td>
+            <td>{{ q.lengthM }}</td>
+            <td>{{ q.weightKg }}</td>
+            <td>{{ fmtTime(q.operatedAt) }}</td>
+            <td>{{ q.operator }}</td>
+            <td>{{ q.remainLengthM }}</td>
+            <td>{{ q.remainWeightKg }}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </template>
@@ -223,4 +290,26 @@ onMounted(load)
 .act.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 700; }
 .act:disabled { opacity: 0.45; cursor: not-allowed; }
 .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+/* ---------------- 领料追溯 ---------------- */
+.trace-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 14px 0 8px; padding-top: 12px; border-top: 1px dashed var(--line);
+}
+.trace-title { font-size: 14px; font-weight: 800; color: var(--primary-deep); }
+.trace-desc { font-size: 12px; color: var(--muted); }
+.trace-empty { font-size: 13px; color: var(--muted); padding: 8px 2px; }
+.ledger { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ledger th, .ledger td { border: 1px solid var(--line); padding: 7px 9px; text-align: left; }
+.ledger th { background: var(--primary-wash); color: var(--primary-deep); font-weight: 700; }
+.ledger tr:nth-child(even) td { background: #fafcfb; }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 700; color: var(--primary-deep); }
+.fail-persist {
+  margin: 0 0 10px; padding: 8px 12px;
+  background: #fdecea; border: 1px solid #f5c6c2; border-radius: 8px; font-size: 12px;
+}
+.fp-tag { font-weight: 800; color: #a32b20; margin-bottom: 4px; }
+.fp-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 3px; }
+.fp-time { color: var(--muted); flex: none; }
+.fp-reason { color: #a32b20; }
 </style>

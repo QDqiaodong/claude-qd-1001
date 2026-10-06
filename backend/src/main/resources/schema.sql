@@ -16,10 +16,13 @@ USE paper_mill;
 
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS finished_bundle;
+DROP TABLE IF EXISTS requisition_attempt;
+DROP TABLE IF EXISTS cutting_requisition;
 DROP TABLE IF EXISTS cutting_order;
 DROP TABLE IF EXISTS paper_roll;
 DROP TABLE IF EXISTS paper_machine;
 DROP TABLE IF EXISTS pulp_chest;
+DROP TABLE IF EXISTS biz_no_seq;
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- ---------------- 制浆工段 · 浆池台账 ----------------
@@ -73,6 +76,57 @@ CREATE TABLE cutting_order (
     deadline         DATE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ---------------- 切纸工段 · 切裁领料记录（闭环账本，只增不改） ----------------
+-- 每一条都是一次成功的切裁领料：订单 + 母卷 + 本次长度/重量 + 操作时间/操作人。
+-- 记录一旦写入不随订单或母卷状态变化而消失，用于订单详情与母卷导轨双向追溯。
+CREATE TABLE cutting_requisition (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    requisition_no VARCHAR(32) NOT NULL UNIQUE COMMENT '领料单号',
+    order_id      BIGINT       NOT NULL,
+    roll_id       BIGINT       NOT NULL,
+    length_m      INT          NOT NULL COMMENT '本次领料长度（米）',
+    weight_kg     DECIMAL(10,2) NOT NULL COMMENT '本次领料重量（千克）',
+    operator      VARCHAR(32)  NOT NULL COMMENT '操作人',
+    operated_at   DATETIME     NOT NULL COMMENT '操作时间',
+    remain_length_m INT        NOT NULL COMMENT '扣减后母卷余长（米）',
+    remain_weight_kg DECIMAL(10,2) NOT NULL COMMENT '扣减后母卷余重（千克）',
+    CONSTRAINT fk_requisition_order FOREIGN KEY (order_id) REFERENCES cutting_order (id),
+    CONSTRAINT fk_requisition_roll  FOREIGN KEY (roll_id)  REFERENCES paper_roll (id),
+    INDEX idx_requisition_order (order_id),
+    INDEX idx_requisition_roll (roll_id),
+    INDEX idx_requisition_operated (operated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 切纸工段 · 领料请求留痕（幂等 + 失败原因持久化） ----------------
+-- 每次领料请求一行：成功行回链 cutting_requisition，失败行记 fail_reason。
+-- request_token 唯一：同一请求重复到达（重复点击/重试）只能拿到原结果；
+-- 失败原因落在库里，刷新或重开页面仍能看到真实余量与失败原因。
+CREATE TABLE requisition_attempt (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_token VARCHAR(64) NOT NULL UNIQUE COMMENT '请求幂等令牌（一次点击一个）',
+    order_id      BIGINT       NULL COMMENT '失败时订单可能不存在/不可领，故允许为空',
+    roll_id       BIGINT       NULL,
+    requisition_id BIGINT      NULL COMMENT '成功时回链领料记录',
+    length_m      INT          NULL COMMENT '本次请求长度',
+    weight_kg     DECIMAL(10,2) NULL COMMENT '本次请求重量',
+    operator      VARCHAR(32)  NULL,
+    result        VARCHAR(8)   NOT NULL COMMENT 'SUCCESS / FAILED',
+    fail_reason   VARCHAR(512) NULL COMMENT '失败明确原因（多条以；连接）',
+    attempted_at  DATETIME     NOT NULL,
+    CONSTRAINT fk_attempt_order FOREIGN KEY (order_id) REFERENCES cutting_order (id),
+    CONSTRAINT fk_attempt_roll  FOREIGN KEY (roll_id)  REFERENCES paper_roll (id),
+    CONSTRAINT fk_attempt_requisition FOREIGN KEY (requisition_id) REFERENCES cutting_requisition (id),
+    INDEX idx_attempt_order (order_id),
+    INDEX idx_attempt_roll (roll_id),
+    INDEX idx_attempt_attempted (attempted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 业务单号发号表（领料单号 LL-xxxxxx 在行锁内取号，并发不撞号） ----------------
+CREATE TABLE biz_no_seq (
+    seq_name  VARCHAR(32) NOT NULL PRIMARY KEY COMMENT '单号类别：REQUISITION=切裁领料单',
+    next_val  BIGINT      NOT NULL COMMENT '下一个可用号码'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ---------------- 成品库 · 成品件与出入库 ----------------
 CREATE TABLE finished_bundle (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -108,7 +162,7 @@ INSERT INTO paper_machine (machine_code, machine_name, design_width_mm, design_s
 
 -- 纸卷：PM-01 设计幅宽 3200，PM-02 设计幅宽 2400
 INSERT INTO paper_roll (roll_no, machine_id, grammage_gsm, width_mm, length_m, weight_kg, grade, status, produced_at) VALUES
-('R-2026001', 1, 70, 3150, 12000, 2646.00, '一等', '可用',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 DAY),
+('R-2026001', 1, 70, 3150, 11000, 2425.50, '一等', '可用',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 DAY),
 ('R-2026002', 1, 70, 3150,  9500, 2094.75, '二等', '可用',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 DAY),
 ('R-2026003', 1, 80, 2400,  6000, 1152.00, '一等', '可用',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY),
 ('R-2026004', 2, 60, 2350,  4200,  591.60, '一等', '可用',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY),
@@ -129,3 +183,26 @@ INSERT INTO finished_bundle (bundle_no, order_id, grammage_gsm, width_mm, sheet_
 ('FB-2026003', 2, 70, 1092, 12000, 1000.00, 'B区', '已出库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR),
 ('FB-2026004', 4, 80,  850,  9000, 430.00, 'B区', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY, NULL),
 ('FB-2026005', 1, 70, 787,  8000, 410.00, 'C区', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 4 HOUR, NULL);
+
+-- 切裁领料种子：CO-2026001 从 R-2026001 领过一次（1000m / 220.50kg），
+-- R-2026001 当前余长 11000m、余重 2425.50kg 即 12000m/2646.00kg 扣减后的结果，账本自洽。
+INSERT INTO cutting_requisition
+    (requisition_no, order_id, roll_id, length_m, weight_kg, operator, operated_at, remain_length_m, remain_weight_kg) VALUES
+('LL-000001', 1, 1, 1000, 220.50, '王建国', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR, 11000, 2425.50);
+
+-- 一次失败的领料留痕：CO-2026001 试图从待检卷 R-2026006 领料（定量也不符），
+-- 母卷未扣、订单未动，失败原因留在库里，重开页面仍可追溯。
+INSERT INTO requisition_attempt
+    (request_token, order_id, roll_id, requisition_id, length_m, weight_kg, operator, result, fail_reason, attempted_at) VALUES
+('seed-fail-0001', 1, 6, NULL, 500, 54.00, '王建国', 'FAILED',
+ '母卷状态为「待检」，不可领料（只有「可用」母卷可领）；母卷定量 90 与订单目标 70 偏差超过 3',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR);
+
+-- 成功行对应的请求留痕（request_token 唯一，重放只能拿回原结果）
+INSERT INTO requisition_attempt
+    (request_token, order_id, roll_id, requisition_id, length_m, weight_kg, operator, result, fail_reason, attempted_at) VALUES
+('seed-ok-0001', 1, 1, 1, 1000, 220.50, '王建国', 'SUCCESS', NULL,
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR);
+
+-- 发号器初值：种子已占用 LL-000001，下一张领料单从 LL-000002 开始
+INSERT INTO biz_no_seq (seq_name, next_val) VALUES ('REQUISITION', 2);

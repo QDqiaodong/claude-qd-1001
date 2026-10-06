@@ -7,7 +7,11 @@ http.interceptors.response.use(
   (response) => response,
   (error) => {
     const message = error?.response?.data?.message || error?.message || '请求失败'
-    return Promise.reject(new Error(message))
+    const wrapped = new Error(message)
+    // 没有 response 说明请求没到达后端（断网/超时/连接被重置），前端据此决定：
+    // 这种失败保留同一 requestToken 允许原样重试，由后端幂等兜底防重复领料
+    wrapped.networkError = !error?.response
+    return Promise.reject(wrapped)
   }
 )
 
@@ -56,6 +60,13 @@ export default {
   checkRoll: (id, rollNo) => call(http.get(`/cutting-orders/${id}/check-roll`, params({ rollNo }))),
   assignRoll: (id, rollNo) => call(http.post(`/cutting-orders/${id}/assign-roll`, null, params({ rollNo }))),
   transferOrder: (id, target) => call(http.post(`/cutting-orders/${id}/transfer`, null, params({ target }))),
+
+  // 切裁领料闭环：登记（请求体带 requestToken 幂等令牌）、订单侧追溯、母卷侧追溯
+  submitRequisition: (id, d) => call(http.post(`/cutting-orders/${id}/requisitions`, d)),
+  orderRequisitions: (id) => call(http.get(`/cutting-orders/${id}/requisitions`)),
+  orderRequisitionAttempts: (id) => call(http.get(`/cutting-orders/${id}/requisition-attempts`)),
+  rollRequisitions: (id) => call(http.get(`/paper-rolls/${id}/requisitions`)),
+  rollRequisitionAttempts: (id) => call(http.get(`/paper-rolls/${id}/requisition-attempts`)),
 
   // ---------------- 成品件 ----------------
   listBundles: (p) => call(http.get('/finished-bundles', params(p))),

@@ -119,7 +119,8 @@ public class CuttingOrderService {
     /**
      * 校验某母卷能否用于本订单（不落库）。
      *
-     * @return 校验结论：可用余长、幅宽余量、定量偏差
+     * @return 校验结论：可用余长、幅宽余量、定量偏差，以及切裁领料的可领上限
+     *         （{code maxTakeLengthM} / {code maxTakeWeightKg}，操作员填领料量前先看清）
      */
     @Transactional(readOnly = true)
     public Map<String, Object> checkRoll(Long id, String rollNo) {
@@ -132,9 +133,19 @@ public class CuttingOrderService {
         out.put("widthGapMm", roll.getWidthMm() - order.getTargetWidthMm());
         out.put("grammageGap", Math.abs(roll.getGrammageGsm() - order.getTargetGrammage()));
         out.put("remainLengthM", roll.getLengthM());
+        out.put("remainWeightKg", roll.getWeightKg());
         out.put("status", roll.getStatus());
+        // 可领上限就是母卷当前真实余量；不可领（非「可用」/规格不符）时给 0，前端禁止提交
+        boolean usable = Dict.isRollUsable(roll.getStatus())
+                && roll.getWidthMm() >= order.getTargetWidthMm()
+                && Math.abs(roll.getGrammageGsm() - order.getTargetGrammage()) <= Dict.GRAMMAGE_TOLERANCE;
+        out.put("maxTakeLengthM", usable ? roll.getLengthM() : 0);
+        out.put("maxTakeWeightKg", usable ? roll.getWeightKg() : BigDecimal.ZERO);
 
         List<String> problems = new java.util.ArrayList<>();
+        // 注意：这里只判「母卷对该订单能不能用」（排产与领料共用），订单自身是否处于
+        // 「切裁中」由领料接口在事务内强制校验、领料面板在前端门控，不能塞进 problems，
+        // 否则待排产订单的排产候选清单会被全部打叉。
         if (!Dict.isRollUsable(roll.getStatus())) {
             problems.add("母卷状态为「" + roll.getStatus() + "」，不可上机");
         }
