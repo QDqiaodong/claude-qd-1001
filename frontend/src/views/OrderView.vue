@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import router from '../router'
 import api from '../api'
+import CuttingIssuePanel from '../components/CuttingIssuePanel.vue'
 
 // ------------------------------------------------------------------
 // 页面操作范式：进度环 + 母卷匹配清单打勾。
@@ -85,6 +86,10 @@ async function transfer(target) {
   } catch (e) { error.value = e.message }
 }
 
+async function onIssueSuccess() {
+  await load()
+}
+
 function ringStyle(rate) {
   const deg = Math.min(360, (Number(rate) / 100) * 360)
   return { background: `conic-gradient(var(--primary) ${deg}deg, #e6eeec ${deg}deg)` }
@@ -133,6 +138,7 @@ onMounted(load)
             <div class="order-spec">{{ o.targetGrammage }}g · {{ o.targetWidthMm }}mm · {{ o.targetWeightKg }}kg</div>
             <div class="order-meta">
               <span class="tag">{{ o.status }}</span>
+              <span v-if="o.assignedRoll" class="roll-tag">排产 {{ o.assignedRoll.rollNo }}</span>
               <span class="gap">欠 {{ o.gapWeightKg }}kg</span>
             </div>
           </div>
@@ -143,7 +149,13 @@ onMounted(load)
     <div class="panel" v-if="selected">
       <div class="panel-head">
         <span class="panel-title">母卷校验 · {{ selected.orderNo }}</span>
-        <span class="panel-desc">目标 {{ selected.targetGrammage }}g / {{ selected.targetWidthMm }}mm</span>
+        <span class="panel-desc">
+          目标 {{ selected.targetGrammage }}g / {{ selected.targetWidthMm }}mm
+          <template v-if="selected.assignedRoll">
+            ｜已排产 {{ selected.assignedRoll.rollNo }}：余 {{ selected.assignedRoll.lengthM }}m /
+            {{ selected.assignedRoll.weightKg }}kg（{{ selected.assignedRoll.status }}）
+          </template>
+        </span>
         <span v-if="checking" class="checking">校验中…</span>
       </div>
 
@@ -176,6 +188,14 @@ onMounted(load)
         <button class="act" :disabled="selected.status !== '切裁中'" @click="transfer('已完成')">标记已完成</button>
         <button class="act" @click="transfer('已取消')">取消订单</button>
       </div>
+
+      <CuttingIssuePanel
+        v-if="selected.status === '切裁中' && selected.assignedRoll"
+        :key="`order-issue-${selected.id}`"
+        mode="order"
+        :order="selected"
+        @success="onIssueSuccess"
+      />
     </div>
   </div>
 </template>
@@ -204,6 +224,7 @@ onMounted(load)
 .order-spec { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .order-meta { margin-top: 5px; display: flex; gap: 8px; align-items: center; }
 .tag { font-size: 11px; padding: 1px 8px; border-radius: 9px; background: var(--primary-wash); color: var(--primary-deep); font-weight: 700; }
+.roll-tag { font-size: 11px; padding: 1px 8px; border-radius: 9px; background: #eef5ff; color: #1565c0; font-weight: 700; }
 .gap { font-size: 11px; color: #c62828; }
 
 .checking { margin-left: auto; font-size: 12px; color: var(--muted); }

@@ -1,6 +1,5 @@
 package com.paper.mill.controller;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 import org.springframework.web.bind.annotation.GetMapping;
@@ -63,13 +62,5 @@ public class PaperRollController {
     @PostMapping("/{id}/transfer")
     public ApiResponse<PaperRoll> transfer(@PathVariable Long id, @RequestParam String target) {
         return ApiResponse.success("状态已更新", rollService.transfer(id, target));
-    }
-
-    /** 切纸取用：扣减母卷余长与余重 */
-    @PostMapping("/{id}/consume")
-    public ApiResponse<PaperRoll> consume(@PathVariable Long id,
-                                          @RequestParam Integer lengthM,
-                                          @RequestParam(required = false) BigDecimal weightKg) {
-        return ApiResponse.success("取用已登记", rollService.consume(id, lengthM, weightKg));
     }
 }

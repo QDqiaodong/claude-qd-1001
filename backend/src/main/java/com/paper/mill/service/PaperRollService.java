@@ -114,6 +114,9 @@ public class PaperRollService {
             if (input.getWidthMm() <= 0) {
                 throw new BizException("幅宽必须大于 0");
             }
+            if (Dict.isRollUsable(roll.getStatus()) && !input.getWidthMm().equals(roll.getWidthMm())) {
+                throw new BizException("可用母卷已排产或可能正在切裁，不能修改幅宽");
+            }
             if (roll.getMachine() != null && roll.getMachine().getDesignWidthMm() != null
                     && input.getWidthMm() > roll.getMachine().getDesignWidthMm()) {
                 throw new BizException("纸卷幅宽 " + input.getWidthMm() + " 超过纸机设计幅宽 "
@@ -125,9 +128,19 @@ public class PaperRollService {
             if (input.getGrammageGsm() <= 0) {
                 throw new BizException("定量必须大于 0");
             }
+            if (Dict.isRollUsable(roll.getStatus())
+                    && !input.getGrammageGsm().equals(roll.getGrammageGsm())) {
+                throw new BizException("可用母卷已排产或可能正在切裁，不能修改定量");
+            }
             roll.setGrammageGsm(input.getGrammageGsm());
         }
+        if (input.getLengthM() != null) {
+            throw new BizException("母卷余长只能由切裁领料闭环扣减，不能手工修改");
+        }
         if (input.getWeightKg() != null) {
+            if (Dict.isRollUsable(roll.getStatus())) {
+                throw new BizException("可用母卷余量只能由切裁领料闭环扣减，不能手工修改");
+            }
             if (input.getWeightKg().signum() < 0) {
                 throw new BizException("重量不能为负数");
             }
@@ -146,6 +159,11 @@ public class PaperRollService {
         if (grade != null && !grade.isBlank() && !Dict.isValidRollGrade(grade)) {
             throw new BizException("等级不合法：" + grade);
         }
+        if ("可用".equals(target) && (roll.getLengthM() < Dict.MIN_REMAIN_LENGTH_M
+                || roll.getWeightKg().signum() <= 0)) {
+            throw new BizException("余长低于 " + Dict.MIN_REMAIN_LENGTH_M
+                    + " 米或余重不为正的母卷不能判为可用");
+        }
         roll.setStatus(target);
         if (grade != null && !grade.isBlank()) {
             roll.setGrade(grade);
@@ -161,40 +179,6 @@ public class PaperRollService {
             throw new BizException("不允许从「" + roll.getStatus() + "」转为「" + target + "」");
         }
         roll.setStatus(target);
-        return rollRepository.save(roll);
-    }
-
-    /**
-     * 切纸机从母卷上取用一段：扣减剩余长度。
-     *
-     * @param id        母卷
-     * @param lengthM   本次取用长度（米）
-     * @param weightKg  本次取用重量（千克）
-     */
-    @Transactional
-    public PaperRoll consume(Long id, Integer lengthM, BigDecimal weightKg) {
-        PaperRoll roll = get(id);
-        if (!Dict.isRollUsable(roll.getStatus())) {
-            throw new BizException("只有「可用」的纸卷能上切纸机，当前状态：" + roll.getStatus());
-        }
-        if (lengthM == null || lengthM <= 0) {
-            throw new BizException("取用长度必须大于 0");
-        }
-        if (lengthM > roll.getLengthM()) {
-            throw new BizException("母卷剩余长度仅 " + roll.getLengthM() + " 米，不足 " + lengthM + " 米");
-        }
-        if (weightKg != null && weightKg.compareTo(roll.getWeightKg()) > 0) {
-            throw new BizException("取用重量超过母卷剩余重量");
-        }
-        int remain = roll.getLengthM() - lengthM;
-        roll.setLengthM(remain);
-        if (weightKg != null) {
-            roll.setWeightKg(roll.getWeightKg().subtract(weightKg));
-        }
-        // 余长不足阈值则整卷判为已切完
-        if (remain < Dict.MIN_REMAIN_LENGTH_M) {
-            roll.setStatus("已切完");
-        }
         return rollRepository.save(roll);
     }
 }

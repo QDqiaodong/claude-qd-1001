@@ -2,11 +2,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import router from '../router'
 import api from '../api'
+import CuttingIssuePanel from '../components/CuttingIssuePanel.vue'
 
 // ------------------------------------------------------------------
 // 页面操作范式：纸机导轨 + 纸卷长度条。
 // 每台纸机是一条横向导轨，它抄出来的纸卷按「剩余长度」画成粗细不一的条子排在导轨上，
-// 条越长代表余量越多；点条选中该卷，下方一条操作条就地完成检验 / 转状态 / 取用。
+// 条越长代表余量越多；点条选中该卷，下方可完成检验，并通过订单领料闭环扣减余量。
 // 纸机头部带 EXTRA 懒加载取到的纸卷总数徽章（那个数字是 count 查询，不装载集合）。
 // ------------------------------------------------------------------
 
@@ -14,11 +15,11 @@ import api from '../api'
 const routeQuery = computed(() => router.currentRoute.value.query || {})
 const machines = ref([])
 const rolls = ref([])
+const orders = ref([])
 const error = ref('')
 const tip = ref('')
 const selectedRollId = ref(null)
 const counts = ref({})
-const consumeLength = ref(500)
 
 const rollsByMachine = computed(() => {
   const map = {}
@@ -44,6 +45,7 @@ async function load() {
     const q = routeQuery.value.q
     machines.value = await api.listMachines()
     rolls.value = await api.listRolls(q ? { status: q } : {})
+    orders.value = await api.listOrders()
     if (!rolls.value.length && q) rolls.value = await api.listRolls()
     // 逐台取纸卷总数（后端走 count 查询）
     const c = {}
@@ -83,15 +85,8 @@ async function transfer(target) {
     await load()
   } catch (e) { error.value = e.message }
 }
-
-async function consume() {
-  if (!selected.value) return
-  error.value = ''; tip.value = ''
-  try {
-    await api.consumeRoll(selected.value.id, consumeLength.value)
-    tip.value = `已从 ${selected.value.rollNo} 取用 ${consumeLength.value} 米`
-    await load()
-  } catch (e) { error.value = e.message }
+async function onIssueSuccess() {
+  await load()
 }
 
 watch(() => routeQuery.value.q, () => load())
@@ -103,7 +98,7 @@ onMounted(load)
     <div class="panel">
       <div class="panel-head">
         <span class="panel-title">抄纸工段 · 纸机导轨与母卷</span>
-        <span class="panel-desc">条子长度 = 母卷剩余长度；点条选中，可就地检验 / 转状态 / 取用</span>
+        <span class="panel-desc">条子长度 = 母卷剩余长度；点条选中，可检验、查看领料上限并通过订单闭环登记</span>
       </div>
 
       <div v-if="error" class="err">{{ error }}</div>
@@ -134,7 +129,7 @@ onMounted(load)
             class="roll-bar"
             :class="[ 'g-' + r.grade, { sel: r.id === selectedRollId, done: r.status === '已切完' } ]"
             :style="{ width: barWidth(r) }"
-            :title="`${r.rollNo} · ${r.grammageGsm}g · ${r.widthMm}mm · 余 ${r.lengthM}m · ${r.grade}`"
+            :title="`${r.rollNo} · ${r.grammageGsm}g · ${r.widthMm}mm · 余 ${r.lengthM}m / ${r.weightKg}kg · ${r.status} · ${r.grade}`"
             @click="selectedRollId = r.id"
           >
             <span class="roll-inner">{{ r.lengthM }}m</span>
@@ -147,19 +142,30 @@ onMounted(load)
     <div class="panel" v-if="selected">
       <div class="panel-head">
         <span class="panel-title">选中母卷 · {{ selected.rollNo }}</span>
-        <span class="panel-desc">{{ selected.grammageGsm }}g/m² · 幅宽 {{ selected.widthMm }}mm · 余长 {{ selected.lengthM }}m · {{ selected.grade }} · {{ selected.status }}</span>
+        <span class="panel-desc">
+          {{ selected.grammageGsm }}g/m² · 幅宽 {{ selected.widthMm }}mm · 余长 {{ selected.lengthM }}m ·
+          余重 {{ selected.weightKg }}kg · {{ selected.grade }} · {{ selected.status }}
+          <template v-if="orders.find(o => o.assignedRoll && o.assignedRoll.id === selected.id && o.status === '切裁中')">
+            ｜已排产给 {{ orders.find(o => o.assignedRoll && o.assignedRoll.id === selected.id && o.status === '切裁中').orderNo }}
+          </template>
+        </span>
       </div>
 
       <div class="op-row">
         <button class="act primary" :disabled="selected.status !== '待检'" @click="inspect('可用')">检验合格</button>
         <button class="act" :disabled="selected.status !== '待检'" @click="inspect('报废')">判废</button>
-        <button class="act" :disabled="selected.status !== '可用'" @click="transfer('已切完')">切完</button>
-        <span class="spacer"></span>
-        <span class="op-label">取用长度</span>
-        <input type="number" min="1" v-model.number="consumeLength" class="num" />
-        <button class="act" :disabled="selected.status !== '可用'" @click="consume">登记取用</button>
       </div>
-      <div class="note">检验只针对「待检」卷；取用只针对「可用」卷，扣减后余长不足 200m 会自动判为已切完。</div>
+      <div class="note">检验只针对「待检」卷；切裁领料必须通过下方订单闭环登记，扣减后余长不足 200m 会自动判为已切完。</div>
+
+      <div class="issue-wrap">
+        <CuttingIssuePanel
+          :key="`roll-issue-${selected.id}`"
+          mode="roll"
+          :roll="selected"
+          :orders="orders"
+          @success="onIssueSuccess"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -223,4 +229,5 @@ onMounted(load)
 .act.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 700; }
 .act:disabled { opacity: 0.45; cursor: not-allowed; }
 .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.issue-wrap { margin-top: 12px; }
 </style>

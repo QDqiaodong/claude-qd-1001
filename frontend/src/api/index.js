@@ -46,8 +46,6 @@ export default {
   inspectRoll: (id, target, grade) =>
     call(http.post(`/paper-rolls/${id}/inspect`, null, params({ target, grade }))),
   transferRoll: (id, target) => call(http.post(`/paper-rolls/${id}/transfer`, null, params({ target }))),
-  consumeRoll: (id, lengthM, weightKg) =>
-    call(http.post(`/paper-rolls/${id}/consume`, null, params({ lengthM, weightKg }))),
 
   // ---------------- 切纸订单 ----------------
   listOrders: (p) => call(http.get('/cutting-orders', params(p))),
@@ -56,6 +54,11 @@ export default {
   checkRoll: (id, rollNo) => call(http.get(`/cutting-orders/${id}/check-roll`, params({ rollNo }))),
   assignRoll: (id, rollNo) => call(http.post(`/cutting-orders/${id}/assign-roll`, null, params({ rollNo }))),
   transferOrder: (id, target) => call(http.post(`/cutting-orders/${id}/transfer`, null, params({ target }))),
+
+  // ---------------- 切裁领料 ----------------
+  issueCutting: (d) => call(http.post('/cutting-issues', d)),
+  orderIssueTrace: (orderId) => call(http.get(`/cutting-issues/orders/${orderId}/trace`)),
+  rollIssueTrace: (rollId) => call(http.get(`/cutting-issues/rolls/${rollId}/trace`)),
 
   // ---------------- 成品件 ----------------
   listBundles: (p) => call(http.get('/finished-bundles', params(p))),

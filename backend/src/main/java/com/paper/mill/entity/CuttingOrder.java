@@ -6,9 +6,12 @@ import java.time.LocalDate;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
 import lombok.Getter;
@@ -52,6 +55,11 @@ public class CuttingOrder {
     /** 已入库重量（千克），入库时累加 */
     @Column(name = "done_weight_kg", nullable = false, precision = 10, scale = 2)
     private BigDecimal doneWeightKg;
+
+    /** 已排产、当前允许登记领料的母卷 */
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "assigned_roll_id")
+    private PaperRoll assignedRoll;
 
     /** 待排产 / 切裁中 / 已完成 / 已取消 */
     @Column(name = "status", nullable = false, length = 16)

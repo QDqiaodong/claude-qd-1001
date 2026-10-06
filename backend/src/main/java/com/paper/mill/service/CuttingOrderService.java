@@ -98,6 +98,10 @@ public class CuttingOrderService {
             if (input.getTargetWidthMm() <= 0) {
                 throw new BizException("目标幅宽必须大于 0");
             }
+            if (order.getAssignedRoll() != null
+                    && !input.getTargetWidthMm().equals(order.getTargetWidthMm())) {
+                throw new BizException("订单已排产母卷，不能修改目标幅宽；如需换规格请先取消后重建");
+            }
             order.setTargetWidthMm(input.getTargetWidthMm());
         }
         if (input.getTargetWeightKg() != null) {
@@ -172,6 +176,7 @@ public class CuttingOrderService {
             throw new BizException("母卷定量 " + roll.getGrammageGsm() + " 与订单目标 "
                     + order.getTargetGrammage() + " 偏差超过 " + Dict.GRAMMAGE_TOLERANCE);
         }
+        order.setAssignedRoll(roll);
         order.setStatus("切裁中");
         return orderRepository.save(order);
     }
@@ -185,6 +190,9 @@ public class CuttingOrderService {
         }
         if (!"已取消".equals(target) && !Dict.canTransferOrder(order.getStatus(), target)) {
             throw new BizException("订单只能逐级推进，不允许从「" + order.getStatus() + "」到「" + target + "」");
+        }
+        if ("切裁中".equals(target) && order.getAssignedRoll() == null) {
+            throw new BizException("必须先排产母卷，订单才能进入「切裁中」");
         }
         if ("已完成".equals(target) && order.getGapWeightKg().signum() > 0) {
             throw new BizException("还欠 " + order.getGapWeightKg() + " 千克未完成，不能置为已完成");

@@ -15,6 +15,8 @@ CREATE DATABASE IF NOT EXISTS paper_mill
 USE paper_mill;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS cutting_issue_attempt;
+DROP TABLE IF EXISTS cutting_issue;
 DROP TABLE IF EXISTS finished_bundle;
 DROP TABLE IF EXISTS cutting_order;
 DROP TABLE IF EXISTS paper_roll;
@@ -57,7 +59,9 @@ CREATE TABLE paper_roll (
     grade        VARCHAR(16)  NOT NULL COMMENT '一等/二等/等外',
     status       VARCHAR(16)  NOT NULL COMMENT '待检/可用/已切完/报废',
     produced_at  DATETIME,
-    CONSTRAINT fk_roll_machine FOREIGN KEY (machine_id) REFERENCES paper_machine (id)
+    CONSTRAINT fk_roll_machine FOREIGN KEY (machine_id) REFERENCES paper_machine (id),
+    CONSTRAINT ck_roll_length_nonnegative CHECK (length_m >= 0),
+    CONSTRAINT ck_roll_weight_nonnegative CHECK (weight_kg >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 切纸工段 · 切纸订单 ----------------
@@ -69,9 +73,56 @@ CREATE TABLE cutting_order (
     target_width_mm  INT          NOT NULL COMMENT '目标幅宽，必须 <= 母卷幅宽',
     target_weight_kg DECIMAL(10,2) NOT NULL,
     done_weight_kg   DECIMAL(10,2) NOT NULL DEFAULT 0,
+    assigned_roll_id BIGINT       NULL COMMENT '已排产母卷',
     status           VARCHAR(16)  NOT NULL COMMENT '待排产/切裁中/已完成/已取消',
-    deadline         DATE
+    deadline         DATE,
+    CONSTRAINT fk_order_assigned_roll FOREIGN KEY (assigned_roll_id) REFERENCES paper_roll (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 切纸工段 · 切裁领料成功记录 ----------------
+CREATE TABLE cutting_issue (
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_id       VARCHAR(64)  NOT NULL UNIQUE,
+    order_id         BIGINT       NOT NULL,
+    roll_id          BIGINT       NOT NULL,
+    issue_length_m   INT          NOT NULL COMMENT '本次领料长度（米）',
+    issue_weight_kg  DECIMAL(10,2) NOT NULL COMMENT '本次领料重量（千克）',
+    before_length_m  INT          NOT NULL COMMENT '领料前母卷余长',
+    before_weight_kg DECIMAL(10,2) NOT NULL COMMENT '领料前母卷余重',
+    after_length_m   INT          NOT NULL COMMENT '领料后母卷余长',
+    after_weight_kg  DECIMAL(10,2) NOT NULL COMMENT '领料后母卷余重',
+    operated_at      DATETIME     NOT NULL,
+    operator_name    VARCHAR(32)  NOT NULL,
+    CONSTRAINT fk_issue_order FOREIGN KEY (order_id) REFERENCES cutting_order (id),
+    CONSTRAINT fk_issue_roll FOREIGN KEY (roll_id) REFERENCES paper_roll (id),
+    CONSTRAINT ck_issue_length_positive CHECK (issue_length_m > 0),
+    CONSTRAINT ck_issue_weight_positive CHECK (issue_weight_kg > 0),
+    CONSTRAINT ck_issue_after_length CHECK (after_length_m >= 0),
+    CONSTRAINT ck_issue_after_weight CHECK (after_weight_kg >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 切纸工段 · 领料请求结果（含失败原因，用于幂等与刷新追溯） ----------------
+CREATE TABLE cutting_issue_attempt (
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_id       VARCHAR(64)  NOT NULL UNIQUE,
+    order_id         BIGINT       NULL,
+    roll_id          BIGINT       NULL,
+    issue_length_m   INT          NULL,
+    issue_weight_kg  DECIMAL(10,2) NULL,
+    operator_name    VARCHAR(32)  NULL,
+    payload_hash     CHAR(64)     NOT NULL,
+    success          TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '0处理中, 1成功, 2失败',
+    failure_reason   VARCHAR(512) NULL,
+    issue_id         BIGINT       NULL,
+    created_at       DATETIME     NOT NULL,
+    finished_at      DATETIME     NULL,
+    CONSTRAINT fk_attempt_issue FOREIGN KEY (issue_id) REFERENCES cutting_issue (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE INDEX idx_cutting_issue_order_time ON cutting_issue (order_id, operated_at DESC);
+CREATE INDEX idx_cutting_issue_roll_time ON cutting_issue (roll_id, operated_at DESC);
+CREATE INDEX idx_issue_attempt_order_time ON cutting_issue_attempt (order_id, created_at DESC);
+CREATE INDEX idx_issue_attempt_roll_time ON cutting_issue_attempt (roll_id, created_at DESC);
 
 -- ---------------- 成品库 · 成品件与出入库 ----------------
 CREATE TABLE finished_bundle (
@@ -116,12 +167,12 @@ INSERT INTO paper_roll (roll_no, machine_id, grammage_gsm, width_mm, length_m, w
 ('R-2026006', 2, 90, 1200,  1500,  162.00, '等外', '待检',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY),
 ('R-2026007', 1, 70, 3150,  8000, 1764.00, '一等', '可用',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR);
 
-INSERT INTO cutting_order (order_no, customer_name, target_grammage, target_width_mm, target_weight_kg, done_weight_kg, status, deadline) VALUES
-('CO-2026001', '华东彩印', 70,  787, 1800.00,  620.00, '切裁中', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 6 DAY),
-('CO-2026002', '新华印务', 70, 1092, 2400.00, 2400.00, '已完成', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 3 DAY),
-('CO-2026003', '时代包装', 60,  640,  900.00,    0.00, '待排产', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 10 DAY),
-('CO-2026004', '联合书刊', 80,  850, 1500.00,  430.00, '切裁中', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 4 DAY),
-('CO-2026005', '老客户A',  90, 1500,  500.00,    0.00, '待排产', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 8 DAY);
+INSERT INTO cutting_order (order_no, customer_name, target_grammage, target_width_mm, target_weight_kg, done_weight_kg, assigned_roll_id, status, deadline) VALUES
+('CO-2026001', '华东彩印', 70,  787, 1800.00,  620.00, 1, '切裁中', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 6 DAY),
+('CO-2026002', '新华印务', 70, 1092, 2400.00, 2400.00, NULL, '已完成', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 3 DAY),
+('CO-2026003', '时代包装', 60,  640,  900.00,    0.00, NULL, '待排产', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 10 DAY),
+('CO-2026004', '联合书刊', 80,  850, 1500.00,  430.00, 3, '切裁中', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 4 DAY),
+('CO-2026005', '老客户A',  90, 1500,  500.00,    0.00, NULL, '待排产', UTC_TIMESTAMP() + INTERVAL 8 HOUR + INTERVAL 8 DAY);
 
 INSERT INTO finished_bundle (bundle_no, order_id, grammage_gsm, width_mm, sheet_count, weight_kg, warehouse_zone, status, stored_at, outbound_at) VALUES
 ('FB-2026001', 1, 70, 787,  12000, 620.00, 'A区', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY, NULL),
